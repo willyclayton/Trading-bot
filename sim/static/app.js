@@ -266,7 +266,7 @@
     const card = btn.closest(".proposal");
     const body = { id: card.dataset.id, token: card.dataset.token };
     if (btn.dataset.act === "reject") body.category = card.querySelector(".cat").value;
-    act(btn.dataset.act, body, `${body.id} ${btn.dataset.act}d`);
+    act(btn.dataset.act, body, `${body.id} ${btn.dataset.act === "approve" ? "approved" : "rejected"}`);
   });
   $("#tabs").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-tab]");
