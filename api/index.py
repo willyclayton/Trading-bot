@@ -6,6 +6,11 @@ State lives in Upstash Redis (``KV_REST_API_URL`` / ``KV_REST_API_TOKEN``,
 injected by the Vercel "Upstash for Redis" integration). Without those
 variables the function falls back to SQLite in ``/tmp``, which does not
 survive between invocations — fine for smoke tests, useless for history.
+
+Vercel decides whether this file is a function by parsing it and looking for
+a top-level ``class handler`` (or an ``app`` object). It must stay a class
+statement; ``handler = make_handler(...)`` is not detected and the build
+fails with "doesn't match any Serverless Functions".
 """
 import os
 import sys
@@ -20,4 +25,6 @@ from sim.web import make_handler  # noqa: E402
 
 _app = App(from_env(default_db="/tmp/sim.db"), seed=int(os.environ.get("SIM_SEED", "7")))
 
-handler = make_handler(_app)
+
+class handler(make_handler(_app)):  # noqa: N801 - name required by Vercel
+    pass
