@@ -39,6 +39,14 @@ keeps advancing days on its own, for unattended soak tests. 31 tests cover the
 invariants in §5. What the simulator is *not*: evidence about the strategy
 (Rule 7). Its P&L is noise by construction.
 
+**Revision 4 (2026-09-06).** The console moves to **Vercel** (§3b): static
+`public/` plus one Python function, state in Upstash Redis, Auto driven by
+ticks from the open tab and a daily cron instead of a background thread. The
+snapshot is bounded so it can round-trip through a key-value store on every
+request. 42 tests. A consequence for the live system is recorded: Vercel Hobby
+cron cannot hit the 09:15 ET pre-open job reliably, so where the two live jobs
+run is an open item (§9).
+
 ---
 
 ## 0. Status: a plan plus a simulator
@@ -52,9 +60,11 @@ Committed at revision 3, under `sim/`:
 | `sim/broker.py` | Stand-in broker: 422 on duplicate `client_order_id`, fractional ⇒ DAY + simple only, fills at next open | §3, Rules 4, 10 |
 | `sim/market.py` | Deterministic synthetic daily bars for an 8-ETF universe | Rule 7 |
 | `sim/engine.py` | The daily cadence: risk gate ×2, drift handling, exits, kill/pause, shadow book, audit | §3, §5 |
-| `sim/store.py` | SQLite snapshot + browseable tables | §3 |
-| `sim/server.py`, `sim/static/` | Stdlib HTTP server, Auto loop, single-page console | §3a |
-| `tests/` | 31 tests: state machine, tokens, idempotency, costs, no-lookahead, TTL, stale, resize, paired cost test, turnover-scaled cost check, kill switch, persistence | §5 |
+| `sim/store.py` | Snapshot stores: SQLite (local, plus browseable tables), Upstash Redis over REST (Vercel, with a writer lock), memory (tests) | §3, §3b |
+| `sim/app.py`, `sim/web.py` | Request-level logic and HTTP handler shared by the local server and the Vercel function; tick-driven Auto | §3a, §3b |
+| `sim/server.py`, `api/index.py`, `public/` | Local dev server / Vercel entrypoint / the single-page console | §3a, §3b |
+| `vercel.json` | Rewrites `/api/*` to the function, daily cron on `/api/tick` | §3b |
+| `tests/` | 42 tests: state machine, tokens, idempotency, costs, no-lookahead, TTL, stale, resize, paired cost test, turnover-scaled cost check, kill switch, persistence, bounded snapshot, request routing, tick semantics, Redis store against a fake Upstash endpoint | §5 |
 
 Still **not** here: `backtest.py` (walk-forward splitter, `load_bars()`), and
 `sim_ttl.py`. The simulator's engine *is* a daily-bar engine with the §5
@@ -247,6 +257,7 @@ plus everything the audit log knows.
 ```
 python -m sim.server            # http://127.0.0.1:8000, state in ./sim.db
 python -m unittest discover -s tests
+# or deploy to Vercel — §3b
 ```
 
 **What it shows.**
@@ -278,10 +289,13 @@ proposal is approved on the spot.
 
 **Auto mode — what it is and what it is for.** Auto is a switch in the header.
 While it is on, (1) every proposal is approved the moment it is created, with
-`decided_by = "auto"`, and (2) a background loop advances one trading day every
-`auto_interval_s` (1.5 s default). It stays on until turned off — including
-across process restarts, because the flag is persisted with the rest of the
-state in SQLite. Its purpose is a **soak test of the machinery with the human
+`decided_by = "auto"`, and (2) a **tick** (`/api/tick`) advances one trading
+day; the open browser tab sends a tick every `auto_interval_s` (1.5 s
+default), the local server also ticks from a background thread, and on Vercel
+a daily cron ticks once with no tab open. A tick with Auto off does nothing.
+The switch stays on until turned off — including across process restarts and
+redeploys, because the flag is persisted with the rest of the state. Its
+purpose is a **soak test of the machinery with the human
 removed**: leave it running and check that nothing wedges, cash never goes
 negative, the position cap holds, exits always fire, the audit log stays
 coherent and the store keeps up. Two properties fall out of the design and are
@@ -311,6 +325,41 @@ enough to exercise every code path (stops, targets, time exits, gaps beyond
 Rule 7 applies: the console's P&L, win rate and R numbers are diagnostics of
 the plumbing, not evidence. Phase 1 replaces this module with `load_bars()`
 (§7) and the rest of the console keeps working.
+
+---
+
+## 3b. Hosting: Vercel
+
+Decided in revision 4: the console is hosted on Vercel. `public/` is served as
+static files; every `/api/*` request is rewritten to one Python function,
+`api/index.py`, which reuses `sim.app.App` unchanged. No build step, no
+third-party packages.
+
+Serverless removes two things the first version leaned on, and the design
+changed to match:
+
+| Lost on Vercel | Replacement |
+|---|---|
+| A disk for `sim.db` | The whole simulator is one JSON snapshot (zlib, ~100 KB after 300 sessions, ~320 KB after 2,000) in **Upstash Redis** via its REST API, selected automatically when `KV_REST_API_URL` / `KV_REST_API_TOKEN` are present. Every request loads → mutates → saves. The snapshot is kept bounded: rolling 120-bar window per symbol, last 600 proposals, last 1,000 orders, last 800 audit rows in memory. Trades and the equity curve are never trimmed — they are the history the console exists to show. |
+| A long-running process for the Auto loop | Auto is **tick-driven**. The tab that has the console open calls `/api/tick` on the interval; `vercel.json` adds a daily cron as a heartbeat when no tab is open. Two tabs or a cron racing a tab are serialised by a 15 s `SET NX PX` lock; the loser gets HTTP 423 and the UI drops that tick silently. |
+| Local-only URL | The app has no authentication. Vercel Deployment Protection (Vercel Authentication) is the gate if the URL should not be public. |
+
+**What this means for the live system (§3), and why it is recorded here.**
+The plan's live cadence needs a job at 16:20 ET and one at **09:15 ET, before
+the open**. Vercel cron on the Hobby plan runs at most once per day with
+±59 minutes of jitter — a 09:15 job could fire at 10:10, after the open, with
+approved orders unsent. Per-minute precision requires Pro. So Vercel is the
+right host for the *console* and, on Pro, a possible host for the *jobs*; on
+Hobby the two jobs need an external scheduler with minute precision (a GitHub
+Actions cron, or any always-on machine) calling the same endpoints. This is
+now an open item in §9; the console does not depend on it.
+
+**Deployment checklist.** Import the GitHub repo into Vercel (preset *Other*,
+no build command). Add *Upstash for Redis* from the Storage tab and connect it
+to the project; redeploy; the header chip must read `store: redis` — if it
+reads `store: sqlite`, the function is writing to `/tmp` and history will
+vanish between invocations. Turn on Deployment Protection if wanted. Details
+in `README.md`.
 
 ---
 
@@ -504,6 +553,18 @@ history:
 
 ## 9. Decisions
 
+### Decided in revision 4
+
+- **Console hosting: Vercel** (static `public/` + one Python function),
+  state in Upstash Redis, Auto tick-driven, daily cron heartbeat. §3b.
+- **Snapshot bounds** (bars window, proposal/order/audit caps) are part of
+  the design, not tuning: the snapshot has to round-trip through a KV store
+  on every request. Trades and the equity curve are exempt.
+- **One code path for both hosts.** `sim.app.App.handle()` is the only
+  router; the local server and the Vercel function are thin adapters. The
+  local server's `--no-auto-thread` flag reproduces serverless behaviour
+  exactly for testing.
+
 ### Decided in revision 3
 
 - **Operator console:** a local single-page web app served by a stdlib Python
@@ -536,10 +597,17 @@ history:
   considered until a rules-based edge has passed Phase 2.
 - **Exit management:** bot-managed, close-evaluated, next-open execution.
   Disaster stop off by default (§3).
-- **Hosting:** two scheduled jobs on any always-on machine or free-tier VM;
-  SQLite state; no long-running process required.
+- **Hosting (rev 2, amended in rev 4):** the *console* is on Vercel (§3b).
+  The two *live jobs* still need a scheduler with minute precision; see
+  "Still open".
 
 ### Still open
+
+- **Where the two live jobs run.** Vercel Hobby cron cannot hit 09:15 ET
+  reliably (daily only, ±59 min). Options: Vercel Pro cron (per-minute), a
+  GitHub Actions schedule calling the function, or a small always-on machine.
+  Decide in Phase 3 when the paper account exists; nothing before then needs
+  it.
 
 - Exact universe list and the liquidity floor (Phase 0 (e) produces the
   candidate list).
