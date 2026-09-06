@@ -74,6 +74,39 @@ class Routing(unittest.TestCase):
         self.assertTrue(payload["state"]["stats"]["auto"])
 
 
+class VercelEntrypoint(unittest.TestCase):
+    """Vercel parses api/*.py and only treats a file as a function if it has a
+    top-level ``class handler`` (or ``app``). An assignment does not count and
+    the build fails with "doesn't match any Serverless Functions"."""
+
+    def test_api_index_defines_a_handler_class(self):
+        import ast
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "api" / "index.py").read_text()
+        classes = [n.name for n in ast.parse(src).body if isinstance(n, ast.ClassDef)]
+        self.assertIn("handler", classes)
+
+    def test_api_index_serves_the_api(self):
+        import importlib.util
+        import os
+        from pathlib import Path
+
+        os.environ["SIM_DB"] = ":memory:"
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "vercel_index", Path(__file__).resolve().parent.parent / "api" / "index.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        finally:
+            del os.environ["SIM_DB"]
+        from http.server import BaseHTTPRequestHandler
+        self.assertTrue(issubclass(mod.handler, BaseHTTPRequestHandler))
+        code, payload = mod._app.handle("GET", "/api/state")
+        self.assertEqual(code, 200)
+        self.assertIn("stats", payload)
+
+
 class FakeUpstash:
     """Just enough of the Upstash REST protocol: GET, SET [NX PX], DEL, EVAL(release)."""
 
