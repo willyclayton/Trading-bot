@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "excludeFiles": "{tests/**,public/**,*.md,.git/**}"
+    }
+  },
+  "crons": [
+    { "path": "/api/tick", "schedule": "30 21 * * 1-5" }
+  ]
+}

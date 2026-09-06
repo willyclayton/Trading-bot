@@ -12,11 +12,12 @@
     <span class="dot" id="heartbeat-dot"></span>
     <h1>Trading Bot <span class="muted">/ paper simulator</span></h1>
     <span class="chip" id="clock">—</span>
+    <span class="chip muted" id="backend"></span>
     <span class="chip warn hidden" id="badge-paused" title="Equity is 15% below high-water mark. No new entries until you resume.">PAUSED</span>
     <span class="chip danger hidden" id="badge-halted" title="Kill switch fired at -30%. Liquidated and halted.">KILL SWITCH</span>
   </div>
   <div class="controls">
-    <label class="auto" id="auto-label" title="Auto approves every proposal without a human and keeps advancing one trading day per tick. Stays on until you turn it off, including across restarts.">
+    <label class="auto" id="auto-label" title="Auto approves every proposal without a human and plays one trading day per tick while this tab is open. The switch stays on until you turn it off, including across restarts.">
       <input type="checkbox" id="auto-toggle">
       <span class="track"><span class="thumb"></span></span>
       <span class="auto-text"><b>AUTO</b> <small id="auto-sub">off</small></span>

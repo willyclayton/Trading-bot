@@ -3,3 +3,5 @@ __pycache__/
 *.db
 *.db-journal
 .pytest_cache/
+.ruff_cache/
+.vercel/
