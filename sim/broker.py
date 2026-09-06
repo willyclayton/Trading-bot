@@ -85,7 +85,10 @@ class SimBroker:
             return self.get_by_client_order_id(kw["client_order_id"]), False
 
     def get_by_client_order_id(self, cid: str) -> Order:
-        return self.orders[self._by_client_id[cid]]
+        oid = self._by_client_id[cid]
+        if oid not in self.orders:
+            raise KeyError(f"{cid}: order settled and pruned from history")
+        return self.orders[oid]
 
     def open_orders(self) -> list[Order]:
         return [o for o in self.orders.values() if o.status == "accepted"]
@@ -114,8 +117,18 @@ class SimBroker:
             out.append(o)
         return out
 
+    MAX_ORDERS = 1000
+
+    def prune(self) -> None:
+        """Drop the oldest settled orders beyond the cap; their client ids stay
+        reserved so a late retry can never recreate them."""
+        settled = [o for o in self.orders.values() if o.status != "accepted"]
+        for o in settled[: max(0, len(self.orders) - self.MAX_ORDERS)]:
+            del self.orders[o.id]
+
     def to_dict(self) -> dict:
-        return {"seq": self._seq, "orders": [o.to_dict() for o in self.orders.values()]}
+        return {"seq": self._seq, "orders": [o.to_dict() for o in self.orders.values()],
+                "client_ids": sorted(set(self._by_client_id) - {o.client_order_id for o in self.orders.values()})}
 
     @classmethod
     def from_dict(cls, d: dict, costs: CostModel) -> SimBroker:
@@ -125,4 +138,6 @@ class SimBroker:
             o = Order(**od)
             b.orders[o.id] = o
             b._by_client_id[o.client_order_id] = o.id
+        for cid in d.get("client_ids", []):
+            b._by_client_id.setdefault(cid, "")
         return b

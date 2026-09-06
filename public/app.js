@@ -35,12 +35,40 @@
     try {
       const r = await api(action, body);
       if (okMsg) toast(typeof okMsg === "function" ? okMsg(r) : okMsg);
-      await refresh();
+      if (r.state) { state.data = r.state; render(); } else await refresh();
     } catch (e) {
       toast(e.message, true);
     } finally {
       state.busy = false;
       document.body.style.cursor = "";
+    }
+  }
+
+  // Auto is tick-driven: while the switch is on, this tab asks the server to
+  // play one day per interval. There is no background process to rely on when
+  // the API runs as a serverless function, so an open tab is the clock.
+  let tickTimer = null;
+  async function tick() {
+    if (state.busy || !state.data?.stats.auto) return;
+    try {
+      const res = await fetch("/api/tick", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (res.status === 423) return;           // another tab or the cron got there first
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      state.data = json;
+      render();
+    } catch (e) {
+      toast("tick failed: " + e.message, true);
+    }
+  }
+  function scheduleLoops() {
+    const auto = !!state.data?.stats.auto;
+    const interval = Math.max(500, (state.data?.config.auto_interval_s || 1.5) * 1000);
+    if (auto && tickTimer === null) {
+      tickTimer = setInterval(tick, interval);
+    } else if (!auto && tickTimer !== null) {
+      clearInterval(tickTimer);
+      tickTimer = null;
     }
   }
   let toastTimer;
@@ -57,8 +85,10 @@
     const d = state.data;
     if (!d) return;
     const s = d.stats, r = s.real, sh = s.shadow;
+    scheduleLoops();
 
     $("#clock").textContent = `${s.date}  ·  day ${s.day}  ·  ${s.steps} steps`;
+    $("#backend").textContent = d.backend ? `store: ${d.backend}` : "";
     $("#badge-paused").classList.toggle("hidden", !s.paused);
     $("#badge-halted").classList.toggle("hidden", !s.halted);
     $("#resume").classList.toggle("hidden", !s.paused);
@@ -67,7 +97,7 @@
     const auto = $("#auto-toggle");
     if (auto.checked !== s.auto) auto.checked = s.auto;
     $("#auto-label").classList.toggle("on", s.auto);
-    $("#auto-sub").textContent = s.auto ? `on · 1 day / ${d.config.auto_interval_s}s · approving everything` : "off · human approves";
+    $("#auto-sub").textContent = s.auto ? `on · 1 day / ${d.config.auto_interval_s}s while a tab is open · approving everything` : "off · human approves";
     for (const id of ["step-1", "step-5", "step-20"]) $("#" + id).disabled = s.auto;
 
     const gap = +(r.equity - sh.equity).toFixed(2);
@@ -279,5 +309,7 @@
   });
 
   refresh();
-  setInterval(() => { if (!state.busy) refresh(); }, 1000);
+  // Light polling when Auto is off (another tab or the cron may have moved things).
+  setInterval(() => { if (!state.busy && !state.data?.stats.auto) refresh(); }, 2000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 })();

@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 from sim.engine import Simulator, Config
-from sim.store import Store
+from sim.market import WINDOW
+from sim.store import SqliteStore
 
 
 def run_until_pending(sim, limit=400):
@@ -33,7 +34,7 @@ class Cadence(unittest.TestCase):
         sim.step()
         self.assertEqual(p.status, "live")
         self.assertEqual(p.fill_day, signal_day + 1)
-        bar = sim.market.bars[p.symbol][p.fill_day]
+        bar = sim.market.bar(p.symbol, p.fill_day)
         order = sim.broker.get_by_client_order_id(p.client_order_id)
         self.assertEqual(order.reference_price, bar.open)
         self.assertGreater(order.filled_price, bar.open)   # slippage against us
@@ -143,6 +144,27 @@ class Invariants(unittest.TestCase):
         self.assertEqual(after, [])
 
 
+class RollingWindow(unittest.TestCase):
+    def test_snapshot_stays_bounded_on_long_runs(self):
+        sim = Simulator(Config(seed=2))
+        sim.set_auto(True)
+        for _ in range(WINDOW + 150):
+            sim.step()
+        for sym, bars in sim.market.bars.items():
+            self.assertEqual(len(bars), WINDOW)
+            self.assertEqual(bars[-1].day, sim.day)
+            self.assertEqual(sim.market.bar(sym, sim.day), bars[-1])
+            self.assertEqual(sim.market.bar(sym, sim.day - WINDOW + 1), bars[0])
+            with self.assertRaises(KeyError):
+                sim.market.bar(sym, sim.day - WINDOW)
+        restored = Simulator.from_dict(json.loads(json.dumps(sim.to_dict())))
+        self.assertEqual(restored.day, sim.day)
+        self.assertEqual(restored.date, sim.date)
+        restored.step()
+        sim.step()
+        self.assertEqual(restored.stats(), sim.stats())
+
+
 class Persistence(unittest.TestCase):
     def test_round_trip_is_exact(self):
         sim = Simulator(Config(seed=9))
@@ -165,10 +187,10 @@ class Persistence(unittest.TestCase):
             sim.set_auto(True)
             for _ in range(60):
                 sim.step()
-            store = Store(path)
-            store.save(sim)
+            store = SqliteStore(path)
+            store.save(sim.to_dict())
             store.close()
-            store2 = Store(path)
+            store2 = SqliteStore(path)
             restored = Simulator.from_dict(store2.load())
             self.assertTrue(restored.auto)
             self.assertEqual(restored.stats(), sim.stats())

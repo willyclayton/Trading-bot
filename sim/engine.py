@@ -191,7 +191,8 @@ class Portfolio:
     def to_dict(self) -> dict:
         return {"name": self.name, "cash": self.cash, "start_equity": self.start_equity,
                 "positions": {s: asdict(p) for s, p in self.positions.items()},
-                "trades": [t.to_dict() for t in self.trades], "curve": self.curve,
+                "trades": [t.to_dict() for t in self.trades],
+                "curve": [[e["day"], e["date"], e["equity"], e["cash"], e["hwm"]] for e in self.curve],
                 "hwm": self.hwm, "total_costs": self.total_costs}
 
     @classmethod
@@ -200,7 +201,7 @@ class Portfolio:
         p.start_equity = d["start_equity"]
         p.positions = {s: Position(**pd) for s, pd in d["positions"].items()}
         p.trades = [Trade(**t) for t in d["trades"]]
-        p.curve = d["curve"]
+        p.curve = [dict(zip(("day", "date", "equity", "cash", "hwm"), row)) for row in d["curve"]]
         p.hwm = d["hwm"]
         p.total_costs = d["total_costs"]
         return p
@@ -250,8 +251,8 @@ class Simulator:
         self.audit.append(row)
         # The SQLite audit table is append-only and keeps everything; the
         # in-memory tail is bounded so the snapshot stays small on long soaks.
-        if len(self.audit) > 6000:
-            del self.audit[:1000]
+        if len(self.audit) > 800:
+            del self.audit[:200]
 
     def _closes(self) -> dict[str, float]:
         return {s: self.market.last(s).close for s, *_ in UNIVERSE}
@@ -409,6 +410,8 @@ class Simulator:
         self.shadow.record_curve(new_day, self.date)
         self.heartbeat_day = new_day
         self.steps += 1
+        self._prune_proposals()
+        self.broker.prune()
         self.log("heartbeat", f"16:20 job complete: {summary}")
 
         if self.auto:
@@ -491,6 +494,17 @@ class Simulator:
         if not self.paused and not self.halted and eq < hwm_floor:
             self.paused = True
             self.log("PAUSE", f"equity ${eq:.2f} is {c.drawdown_pause_pct:.0%} below high-water ${self.real.hwm:.2f}: no new entries until manual review")
+
+    MAX_PROPOSALS = 600
+
+    def _prune_proposals(self) -> None:
+        """Keep the snapshot bounded: oldest terminal proposals fall off the
+        end. Positions and trades keep their own copy of what they need."""
+        if len(self.proposals) <= self.MAX_PROPOSALS:
+            return
+        excess = len(self.proposals) - self.MAX_PROPOSALS
+        for pid in [p.id for p in self.proposals.values() if p.is_terminal][:excess]:
+            del self.proposals[pid]
 
     def _propose(self, day: int) -> int:
         n = 0
