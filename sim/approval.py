@@ -12,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass, field, asdict
-from typing import Optional
 
 
 class IllegalTransition(Exception):
@@ -56,18 +55,18 @@ class Proposal:
     r_multiple_target: float
     ttl_day: int                  # expires at the open of this day if undecided
     status: str = "proposed"
-    token: Optional[str] = None
+    token: str | None = None
     token_used: bool = False
-    decided_by: Optional[str] = None
-    decided_day: Optional[int] = None
-    reject_category: Optional[str] = None
-    reject_note: Optional[str] = None
-    block_reason: Optional[str] = None
+    decided_by: str | None = None
+    decided_day: int | None = None
+    reject_category: str | None = None
+    reject_note: str | None = None
+    block_reason: str | None = None
     client_order_id: str = ""
-    fill_price: Optional[float] = None
-    fill_qty: Optional[float] = None
-    fill_day: Optional[int] = None
-    drift_pct: Optional[float] = None
+    fill_price: float | None = None
+    fill_qty: float | None = None
+    fill_day: int | None = None
+    drift_pct: float | None = None
     history: list = field(default_factory=list)
 
     def __post_init__(self):
@@ -131,7 +130,7 @@ class Proposal:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Proposal":
+    def from_dict(cls, d: dict) -> Proposal:
         d = dict(d)
         d.pop("has_token", None)
         return cls(**d)

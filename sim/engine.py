@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import dataclass, asdict
 
-from .approval import Proposal, IllegalTransition, TokenError, REJECT_CATEGORIES
+from .approval import Proposal, IllegalTransition, TokenError
 from .broker import SimBroker, Order
 from .costs import CostModel
 from .market import Market, UNIVERSE
@@ -66,7 +65,7 @@ class Position:
     proposal_id: str
     entry_ref: float                    # printed open; entry_price includes slippage
     entry_fees: float
-    exit_pending: Optional[str] = None   # reason, once an exit order is queued
+    exit_pending: str | None = None   # reason, once an exit order is queued
     last_close: float = 0.0
 
     def market_value(self) -> float:
@@ -196,7 +195,7 @@ class Portfolio:
                 "hwm": self.hwm, "total_costs": self.total_costs}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Portfolio":
+    def from_dict(cls, d: dict) -> Portfolio:
         p = cls(d["name"], d["cash"])
         p.start_equity = d["start_equity"]
         p.positions = {s: Position(**pd) for s, pd in d["positions"].items()}
@@ -225,7 +224,7 @@ class Simulator:
         self.paused = False
         self.halted = False
         self.kill_triggered = False
-        self.heartbeat_day: Optional[int] = None
+        self.heartbeat_day: int | None = None
         self.steps = 0
         self.created_at = time.time()
         self._seq = 0
@@ -267,28 +266,21 @@ class Simulator:
 
     COMMITTED = ("pending", "approved", "submitted")
 
-    def _committed(self, exclude: Optional[str] = None) -> list[Proposal]:
+    def _committed(self, exclude: str | None = None) -> list[Proposal]:
         return [p for p in self.proposals.values() if p.status in self.COMMITTED and p.id != exclude]
 
-    def _committed_notional(self, exclude: Optional[str] = None) -> float:
-        return sum(p.notional for p in self._committed(exclude))
-
     def _active_symbols(self) -> set[str]:
-        s = set(self.real.positions)
-        s |= {p.symbol for p in self.proposals.values() if p.status in ("pending", "approved", "submitted")}
-        return s
+        return set(self.real.positions) | {p.symbol for p in self._committed()}
 
     # -- risk gate ---------------------------------------------------------
-    def risk_gate(self, prop: Proposal, book: Portfolio, entries_today: int, at: str) -> Optional[str]:
+    def risk_gate(self, prop: Proposal, book: Portfolio, entries_today: int, at: str) -> str | None:
         """Return a block reason, or None if the proposal passes."""
         c = self.config
         eq = book.equity()
         if self.halted:
             return "kill switch active: no new entries"
-        if self.paused and at == "close":
-            return "drawdown pause active: no new proposals until manual review"
-        if self.paused and at == "open":
-            return "drawdown pause active at submit"
+        if self.paused:
+            return f"drawdown pause active at {at}: no new entries until manual review"
         committed = self._committed(exclude=prop.id)
         if len(book.positions) + len(committed) >= c.max_positions:
             return f"max concurrent positions ({c.max_positions}) reached"
@@ -305,7 +297,7 @@ class Simulator:
         return None
 
     @staticmethod
-    def validate(prop: Proposal) -> Optional[str]:
+    def validate(prop: Proposal) -> str | None:
         if prop.symbol not in {s for s, *_ in UNIVERSE}:
             return "symbol not in universe"
         if not (prop.stop_price < prop.signal_close < prop.target_price):
@@ -567,18 +559,18 @@ class Simulator:
 
     # -- decisions -----------------------------------------------------------
     def approve(self, proposal_id: str, token: str, by: str = "human") -> Proposal:
-        p = self._pending(proposal_id)
+        p = self._get(proposal_id)
         p.approve(token, self.day, by)
         self.log("approved", f"{p.id} {p.symbol} approved by {by}", proposal_id=p.id)
         return p
 
     def reject(self, proposal_id: str, token: str, category: str, note: str = "", by: str = "human") -> Proposal:
-        p = self._pending(proposal_id)
+        p = self._get(proposal_id)
         p.reject(token, self.day, by, category, note)
         self.log("rejected", f"{p.id} {p.symbol} rejected by {by} [{category}] {note}".rstrip(), proposal_id=p.id)
         return p
 
-    def _pending(self, proposal_id: str) -> Proposal:
+    def _get(self, proposal_id: str) -> Proposal:
         p = self.proposals.get(proposal_id)
         if p is None:
             raise KeyError(proposal_id)
@@ -644,7 +636,7 @@ class Simulator:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Simulator":
+    def from_dict(cls, d: dict) -> Simulator:
         s = cls.__new__(cls)
         s.config = Config(**d["config"])
         s.costs = CostModel(slippage_bps=s.config.slippage_bps, charge_fees=s.config.charge_fees)

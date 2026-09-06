@@ -104,7 +104,7 @@ class Market:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Market":
+    def from_dict(cls, d: dict) -> Market:
         m = cls.__new__(cls)
         m.seed = d["seed"]
         m.start = date.fromisoformat(d["start"])
