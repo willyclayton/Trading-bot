@@ -26,17 +26,42 @@ in `RESEARCH.md`. Summary of what changed:
 
 Also: the PDT rule really was eliminated on 4 Jun 2026 (verified, and Alpaca has
 it in production), the fee rates in §2 are now real numbers with dates, and the
-repository currently contains **none of the code described in §4** — see §0.
+repository at revision 2 contained **none of the code described in §4** — see §0.
+
+**Revision 3 (2026-09-05).** First code lands: a **paper-only simulator with an
+operator console** (`sim/`, §3a). It runs the §3 cadence end to end against
+synthetic bars — proposals, single-use approval tokens, TTL expiry, the double
+risk gate, drift resize/STALE, idempotent DAY orders, bot-managed exits, the
+date-indexed cost model, kill switch, drawdown pause, shadow book and audit
+log — and shows history, trades, orders and the audit trail in a browser. It
+also has an **Auto** switch that approves every proposal without a human and
+keeps advancing days on its own, for unattended soak tests. 31 tests cover the
+invariants in §5. What the simulator is *not*: evidence about the strategy
+(Rule 7). Its P&L is noise by construction.
 
 ---
 
-## 0. Status: the repo is a plan, not a codebase
+## 0. Status: a plan plus a simulator
 
-`approval.py`, `backtest.py`, `sim_ttl.py` and the 34 tests described in §4 are
-not committed here. Nothing in §4 could be verified. **Phase 0, step 1 is to
-commit that code and get the suite running in CI.** Until then, every property
-claimed in §4 and §5 is a claim, and any agent picking this up should treat it
-as such.
+Committed at revision 3, under `sim/`:
+
+| Module | What it is | Plan section |
+|---|---|---|
+| `sim/approval.py` | Proposal state machine, single-use tokens, deterministic `client_order_id` | §3, §4 |
+| `sim/costs.py` | `CostModel` with dated §31 / TAF / CAT schedules, round-up-to-cent, paper-equivalent mode | §2, Rule 8 |
+| `sim/broker.py` | Stand-in broker: 422 on duplicate `client_order_id`, fractional ⇒ DAY + simple only, fills at next open | §3, Rules 4, 10 |
+| `sim/market.py` | Deterministic synthetic daily bars for an 8-ETF universe | Rule 7 |
+| `sim/engine.py` | The daily cadence: risk gate ×2, drift handling, exits, kill/pause, shadow book, audit | §3, §5 |
+| `sim/store.py` | SQLite snapshot + browseable tables | §3 |
+| `sim/server.py`, `sim/static/` | Stdlib HTTP server, Auto loop, single-page console | §3a |
+| `tests/` | 31 tests: state machine, tokens, idempotency, costs, no-lookahead, TTL, stale, resize, paired cost test, turnover-scaled cost check, kill switch, persistence | §5 |
+
+Still **not** here: `backtest.py` (walk-forward splitter, `load_bars()`), and
+`sim_ttl.py`. The simulator's engine *is* a daily-bar engine with the §5
+invariants tested, so it is the natural base for Phase 1 rather than a second
+engine. **Phase 0, step 1 is now: keep the suite green in CI and replace
+`sim/market.py` with real bars through `load_bars()` (§7).** Every §4 claim
+that the simulator does not cover remains a claim.
 
 ---
 
@@ -212,9 +237,87 @@ strategy signal (close of day t)
 
 ---
 
-## 4. What is claimed to be built (not in this repo — see §0)
+## 3a. Operator console (the simulator)
 
-**34 tests passing** (claimed).
+The same loop, runnable on a laptop with no broker, no keys and no schedule.
+One click ("Step 1 day") plays one full trading day of the §3 cadence against
+synthetic bars; the browser shows what the operator would see over Telegram
+plus everything the audit log knows.
+
+```
+python -m sim.server            # http://127.0.0.1:8000, state in ./sim.db
+python -m unittest discover -s tests
+```
+
+**What it shows.**
+
+| Panel | Contents |
+|---|---|
+| Header | sim date/day, PAUSED / KILL SWITCH badges, **Auto** switch, Step 1/5/20, Resume entries, Reset |
+| KPIs | equity, cash, invested, P&L, drawdown vs. high-water, trades / win rate / avg R, friction paid, positions vs. cap, pending count, shadow-book equity and real−shadow gap, discretionary reject rate |
+| Equity chart | real book, shadow book, high-water mark, −15% pause line |
+| Pending approval | the full trade plan per §3 (symbol, notional, qty, signal close, stop, target with R multiple, max hold, fill instruction, reason); **Approve** / **Reject** with a mandatory reject category (operational / data / discretion) |
+| Universe | last close, day change, 40-bar sparkline, HELD marker |
+| Positions | qty, entry, last, value, unrealised, stop, target, days held / max, queued exit and its reason |
+| Trades | every closed round trip: gross on printed opens, slippage, fees, net, R, hold, exit reason; totals row |
+| Orders & fills | every order with `client_order_id`, TIF/class, reference open vs. fill, slippage, fees |
+| Proposals | every proposal ever created with status, decided-by, drift %, fill, block/reject note |
+| Shadow book | positions and trades as if every PENDING proposal had been approved |
+| Audit log | append-only: boot, proposal, approved/rejected/expired, submitted, fill, exit_queued, blocked, stale, PAUSE, RESUME, KILL, heartbeat |
+
+**How a "day" maps to the cadence.** `Simulator.step()` generates the next
+completed bar, then in order: TTL sweep (undecided ⇒ `expired`); for each
+`approved` proposal the risk gate *again*, then the drift check against the
+open (resize to keep risk = 1%, or `stale` if |gap| > `max_gap`), then an
+idempotent DAY market order; all open orders fill at the open with the cost
+model applied; the shadow book fills what it would have; positions are marked
+at the close; exit rules run (stop / target / time / kill) and queue sell orders
+for the next open; drawdown pause and kill switch are checked; new signals are
+validated, gated and become `pending`. Then, if Auto is on, every `pending`
+proposal is approved on the spot.
+
+**Auto mode — what it is and what it is for.** Auto is a switch in the header.
+While it is on, (1) every proposal is approved the moment it is created, with
+`decided_by = "auto"`, and (2) a background loop advances one trading day every
+`auto_interval_s` (1.5 s default). It stays on until turned off — including
+across process restarts, because the flag is persisted with the rest of the
+state in SQLite. Its purpose is a **soak test of the machinery with the human
+removed**: leave it running and check that nothing wedges, cash never goes
+negative, the position cap holds, exits always fire, the audit log stays
+coherent and the store keeps up. Two properties fall out of the design and are
+asserted in tests:
+
+- With Auto on, **the real book equals the shadow book exactly** (same trades,
+  same equity to the cent), because the shadow book is defined as
+  "approve everything at the modelled fill". This is the zero point for the
+  human-filtering bias in §3; any real−shadow gap that appears once Auto is
+  off is the operator's doing.
+- Auto goes through the **same** `approve()` path as a human tap: same token,
+  same single-use check, same audit row. There is no back door around the
+  state machine.
+
+What Auto is **not**: a live trading mode. Turning it on live would delete
+the approve-to-execute architecture in §3 and turn the system into a fully
+automated one, which is a different project with a different risk profile.
+The simulator and the paper account are the only places it may be used
+(Rule 13). Auto does not bypass the risk gate, the drawdown pause or the kill
+switch — under a pause it keeps stepping days but nothing new is proposed,
+which is the intended behaviour; "Resume entries" is the manual review.
+
+**Synthetic data.** `sim/market.py` produces deterministic drifting random
+walks with a small mean-reverting pull and a plausible intraday range. It is
+enough to exercise every code path (stops, targets, time exits, gaps beyond
+`max_gap`, the position cap, the pause). It says nothing about any strategy.
+Rule 7 applies: the console's P&L, win rate and R numbers are diagnostics of
+the plumbing, not evidence. Phase 1 replaces this module with `load_bars()`
+(§7) and the rest of the console keeps working.
+
+---
+
+## 4. What was claimed at revision 1 (partly superseded — see §0)
+
+**34 tests passing** (claimed at rev 1; the simulator now has 31 committed
+tests covering much of the same ground).
 
 ### `approval.py` + `test_approval.py` (21 tests)
 State machine `proposed → pending → approved → submitted → live`, plus terminal
@@ -314,7 +417,7 @@ ends when its gate is met or fails.
 
 | Phase | Gate to pass | Kill condition |
 |---|---|---|
-| **0. Scope lock** | (a) §4 code committed, tests green in CI. (b) Alpaca live account open and funded; `max_margin_multiplier="1"`, `no_shorting=true`, `fractional_trading=true` confirmed via `GET /v2/account/configurations`. (c) Paper account created at $1,000 with the same configuration. (d) With the live keys: `GET /v2/stocks/bars?feed=sip&timeframe=1Day&adjustment=all` returns 2016+ data for a test symbol at zero cost. (e) Candidate universe filtered to `fractionable=true`, `tradable=true`, exchange ≠ OTC. (f) Telegram bot receives a message and a button callback round-trips. | Any of (b)–(d) false ⇒ re-evaluate broker (Public.com) before writing more code. |
+| **0. Scope lock** | (a) `sim/` suite green in CI; an Auto soak run of ≥ 2,000 simulated sessions completes with cash ≥ 0 throughout, no unhandled exception, real == shadow to the cent. (b) Alpaca live account open and funded; `max_margin_multiplier="1"`, `no_shorting=true`, `fractional_trading=true` confirmed via `GET /v2/account/configurations`. (c) Paper account created at $1,000 with the same configuration. (d) With the live keys: `GET /v2/stocks/bars?feed=sip&timeframe=1Day&adjustment=all` returns 2016+ data for a test symbol at zero cost. (e) Candidate universe filtered to `fractionable=true`, `tradable=true`, exchange ≠ OTC. (f) Telegram bot receives a message and a button callback round-trips. | Any of (b)–(d) false ⇒ re-evaluate broker (Public.com) before writing more code. |
 | **1. Data + harness** | Real daily bars through `load_bars()` with parquet cache and QA (calendar gaps, flat runs, cross-source check). Engine passes: paired cost test, turnover-scaled cost check, no-lookahead test, go-flat test, settlement test. Exposure-matched benchmark implemented. Cost model uses the §2 rates with effective dates. | Harness invariants cannot be made to hold on real data ⇒ stop and fix; do not proceed to strategies. |
 | **2. Edge hunt — KILL GATE** | **Pre-register** ≤ 5 hypotheses, each with a one-paragraph economic rationale and fixed parameter grid, *before* running them (commit the list). Log every backtest run (trial count is an input to the deflated Sharpe ratio). A hypothesis passes only if, on walk-forward out-of-sample windows: (1) it beats both exposure-matched benchmarks net of costs, (2) deflated Sharpe > 0 after accounting for trials, (3) it is not carried by a single year or a single symbol (drop-one tests), (4) performance is stable across the pre-registered parameter neighbourhood, (5) it survives 2× the modelled slippage. | Nothing passes ⇒ **stop the project.** Write up what was learned. This outcome is the expected one and is a success. |
 | **3. Paper trading** | Approval layer wired to Alpaca paper with §3 cadence. Gate is **reconciliation, not P&L** (a few weeks of paper cannot measure returns — §1): (a) live signal generator reproduces the backtest's signals on the same bars, every day, zero discrepancies; (b) every fill within a pre-set tolerance of the engine's modelled fill (paper-equivalent settings); (c) zero unhandled operational failures (missed job, stuck order, duplicate submit) over ≥ 20 round trips; (d) shadow book and audit log complete. Calibrate `slippage_bps` from paper fill vs. official open. | Signal mismatch that cannot be explained and fixed ⇒ the backtest was fiction; back to Phase 1. |
@@ -328,10 +431,13 @@ data is free. Failing there is the cheap answer and the likely one.
 
 ## 7. Next task
 
-Do not start until §0 (code committed) and Phase 0 (b)–(d) are done, because
-(d) decides whether Alpaca remains the broker.
+Do not start until Phase 0 (a)–(d) are done, because (d) decides whether
+Alpaca remains the broker.
 
-Then: wire the Alpaca daily-bar loader into `backtest.py::load_bars()`:
+Then: write `load_bars()` and make it the simulator's data source in place of
+`sim/market.py` (same `Bar` interface: day, date, OHLCV per symbol), so the
+console, the risk gate, the exits and the audit log run unchanged on real
+history:
 
 - `GET /v2/stocks/bars`, `feed=sip`, `timeframe=1Day`, `adjustment=all`,
   `start=2016-01-04`, `end` ≥ 15 min in the past, paginate on
@@ -384,10 +490,37 @@ Then: wire the Alpaca daily-bar loader into `backtest.py::load_bars()`:
     logged; the trial count feeds the deflated Sharpe ratio.
 12. When a test fails, **check whether the test is wrong** before changing the
     code. That already happened once here (the 17-of-20 assertion in rev 1).
+13. **Auto mode is a test harness, not a trading mode.** It exists in the
+    simulator and may be used against the paper account. It must never be
+    wired to live keys; a live bot that approves its own proposals is a
+    different architecture from §3 and would need its own plan. Auto must go
+    through `approve()` like a human does — no path that skips the token, the
+    second risk gate or the audit row.
+14. **Do not read the simulator's P&L as evidence** (restating Rule 7 for the
+    console, because it now shows a green number). Synthetic bars exercise
+    code paths. Only Phase 2 on real data speaks to the edge.
 
 ---
 
 ## 9. Decisions
+
+### Decided in revision 3
+
+- **Operator console:** a local single-page web app served by a stdlib Python
+  HTTP server, state in SQLite, zero third-party dependencies. Chosen over a
+  Telegram-only view because history, trades, orders and the audit log need
+  tables and a chart, and over a framework-based app because there is nothing
+  to install and nothing to keep patched.
+- **Auto switch:** approves every proposal and advances days on a timer; flag
+  persisted so it stays on across restarts. For soak-testing the machinery and
+  as the zero point of the human-filter metric (real == shadow when on).
+  Simulator and paper only (Rule 13).
+- **One engine, not two.** The simulator's daily-step engine carries the §5
+  invariants as tests. Phase 1 swaps its data source rather than writing a
+  separate `backtest.py`; the walk-forward splitter is added on top of it.
+- **Reject categories are mandatory** on the Reject button (operational /
+  data / discretion), so the discretionary-reject rate in §3 is measured from
+  day one rather than reconstructed later.
 
 ### Decided in revision 2
 

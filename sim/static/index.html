@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Bot — Paper Simulator</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="heartbeat-dot"></span>
+    <h1>Trading Bot <span class="muted">/ paper simulator</span></h1>
+    <span class="chip" id="clock">—</span>
+    <span class="chip warn hidden" id="badge-paused" title="Equity is 15% below high-water mark. No new entries until you resume.">PAUSED</span>
+    <span class="chip danger hidden" id="badge-halted" title="Kill switch fired at -30%. Liquidated and halted.">KILL SWITCH</span>
+  </div>
+  <div class="controls">
+    <label class="auto" id="auto-label" title="Auto approves every proposal without a human and keeps advancing one trading day per tick. Stays on until you turn it off, including across restarts.">
+      <input type="checkbox" id="auto-toggle">
+      <span class="track"><span class="thumb"></span></span>
+      <span class="auto-text"><b>AUTO</b> <small id="auto-sub">off</small></span>
+    </label>
+    <div class="btn-group">
+      <button id="step-1">Step 1 day</button>
+      <button id="step-5">+5</button>
+      <button id="step-20">+20</button>
+    </div>
+    <button id="resume" class="hidden warn-btn">Resume entries</button>
+    <button id="reset" class="ghost" title="Wipe state and start a fresh $1,000 account">Reset</button>
+  </div>
+</header>
+
+<section class="kpis" id="kpis"></section>
+
+<main class="grid">
+  <section class="card chart-card">
+    <div class="card-head">
+      <h2>Equity</h2>
+      <div class="legend">
+        <span><i class="sw real"></i>real book</span>
+        <span><i class="sw shadow"></i>shadow (all approved)</span>
+        <span><i class="sw hwm"></i>high-water</span>
+        <span><i class="sw pause"></i>pause line</span>
+      </div>
+    </div>
+    <svg id="chart" viewBox="0 0 800 260" preserveAspectRatio="none"></svg>
+    <div class="chart-foot muted" id="chart-foot"></div>
+  </section>
+
+  <section class="card pending-card">
+    <div class="card-head">
+      <h2>Pending approval <span class="count" id="pending-count">0</span></h2>
+      <span class="muted small">TTL 09:15 next trading day</span>
+    </div>
+    <div id="pending"></div>
+  </section>
+
+  <section class="card quotes-card">
+    <div class="card-head"><h2>Universe</h2><span class="muted small">synthetic daily bars — operations only, never strategy evidence</span></div>
+    <div id="quotes" class="quotes"></div>
+  </section>
+
+  <section class="card wide">
+    <nav class="tabs" id="tabs">
+      <button data-tab="positions" class="active">Positions</button>
+      <button data-tab="trades">Trades</button>
+      <button data-tab="orders">Orders &amp; fills</button>
+      <button data-tab="proposals">Proposals</button>
+      <button data-tab="shadow">Shadow book</button>
+      <button data-tab="audit">Audit log</button>
+    </nav>
+    <div class="tab-body" id="tab-body"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>
