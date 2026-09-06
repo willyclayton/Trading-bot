@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from datetime import date
 
 # (effective_from, dollars per $1M of sale notional)
+# 2025-05-14 onward is verified (RESEARCH.md §3). Earlier rows are from memory
+# and only matter once real 2016+ bars are loaded; Phase 1 replaces them with
+# the SEC fee-rate advisories (plan §8, Rule 8).
 SEC_31_SCHEDULE = [
     (date(2016, 1, 1), 21.80),
-    (date(2016, 7, 14), 21.80),
     (date(2017, 4, 3), 23.10),
     (date(2018, 4, 16), 13.00),
     (date(2019, 4, 16), 20.70),
@@ -107,6 +109,6 @@ class CostModel:
             sec31 = taf = 0.0
         return FillCosts(round(slippage, 4), sec31, taf, cat)
 
-    def paper_equivalent(self) -> "CostModel":
+    def paper_equivalent(self) -> CostModel:
         """Alpaca paper fills at NBBO with no fees; use this when comparing to paper."""
         return CostModel(slippage_bps=0.0, charge_fees=False, charge_slippage=False)

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from datetime import date
-from typing import Optional
 
 from .costs import CostModel
 
@@ -35,14 +34,14 @@ class Order:
     side: str
     qty: float
     kind: str                     # "entry" | "exit"
-    proposal_id: Optional[str]
+    proposal_id: str | None
     time_in_force: str = "day"
     order_class: str = "simple"
     status: str = "accepted"      # accepted | filled | canceled
     submitted_day: int = 0
-    filled_day: Optional[int] = None
-    filled_price: Optional[float] = None
-    reference_price: Optional[float] = None
+    filled_day: int | None = None
+    filled_price: float | None = None
+    reference_price: float | None = None
     fees: float = 0.0
     slippage: float = 0.0
     note: str = ""
@@ -59,7 +58,7 @@ class SimBroker:
         self._seq = 0
 
     def submit(self, *, client_order_id: str, symbol: str, side: str, qty: float,
-               kind: str, proposal_id: Optional[str], day: int,
+               kind: str, proposal_id: str | None, day: int,
                time_in_force: str = "day", order_class: str = "simple") -> Order:
         if client_order_id in self._by_client_id:
             raise DuplicateClientOrderId("client_order_id must be unique")
@@ -119,7 +118,7 @@ class SimBroker:
         return {"seq": self._seq, "orders": [o.to_dict() for o in self.orders.values()]}
 
     @classmethod
-    def from_dict(cls, d: dict, costs: CostModel) -> "SimBroker":
+    def from_dict(cls, d: dict, costs: CostModel) -> SimBroker:
         b = cls(costs)
         b._seq = d["seq"]
         for od in d["orders"]:
